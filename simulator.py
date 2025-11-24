@@ -1,17 +1,15 @@
 import numpy as np
-
 import matplotlib
 import matplotlib.pyplot as plt
-
 from time import time
 
 from racetrack import RaceTrack
 from racecar import RaceCar
-from controller import lower_controller, controller
+from controller import VehicleController
 
 class Simulator:
 
-    def __init__(self, rt : RaceTrack):
+    def __init__(self, rt : RaceTrack, raceline_path: str = None):
         matplotlib.rcParams["figure.dpi"] = 300
         matplotlib.rcParams["font.size"] = 8
 
@@ -21,6 +19,23 @@ class Simulator:
         self.axis.set_xlabel("X"); self.axis.set_ylabel("Y")
 
         self.car = RaceCar(self.rt.initial_state.T)
+
+        # Load Raceline if provided
+        self.raceline = None
+        if raceline_path:
+            try:
+                # Assuming format: # x_m, y_m (skip comments)
+                data = np.loadtxt(raceline_path, comments="#", delimiter=",")
+                self.raceline = data[:, 0:2]
+                print(f"Loaded raceline from {raceline_path} with {len(self.raceline)} points.")
+            except Exception as e:
+                print(f"Failed to load raceline: {e}. Defaulting to centerline.")
+                self.raceline = self.rt.centerline
+        else:
+            self.raceline = self.rt.centerline
+
+        # Initialize Controller
+        self.controller = VehicleController(self.car.parameters, self.raceline)
 
         self.lap_time_elapsed = 0
         self.lap_start_time = None
@@ -35,6 +50,7 @@ class Simulator:
         min_dist_right = float('inf')
         min_dist_left = float('inf')
         
+        # This check is expensive (O(N)), but N is small enough (~1000 points)
         for i in range(len(self.rt.right_boundary)):
             dist_right = np.linalg.norm(car_position - self.rt.right_boundary[i])
             dist_left = np.linalg.norm(car_position - self.rt.left_boundary[i])
@@ -74,13 +90,18 @@ class Simulator:
             self.axis.cla()
 
             self.rt.plot_track(self.axis)
+            
+            # Plot Raceline if available (Green dashed line)
+            if self.raceline is not None:
+                self.axis.plot(self.raceline[:,0], self.raceline[:,1], 'g--', linewidth=0.5, alpha=0.7)
 
             self.axis.set_xlim(self.car.state[0] - 200, self.car.state[0] + 200)
             self.axis.set_ylim(self.car.state[1] - 200, self.car.state[1] + 200)
 
-            desired = controller(self.car.state, self.car.parameters, self.rt)
-            cont = lower_controller(self.car.state, desired, self.car.parameters)
-            self.car.update(cont)
+            # Compute Control
+            control_input = self.controller.compute_control(self.car.state)
+            self.car.update(control_input)
+            
             self.update_status()
             self.check_track_limits()
 
