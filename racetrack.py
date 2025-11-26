@@ -6,10 +6,15 @@ import matplotlib.axes as axes
 
 class RaceTrack:
 
-    def __init__(self, filepath : str):
+    def __init__(self, filepath : str, raceline_filepath : str = None):
         data = np.loadtxt(filepath, comments="#", delimiter=",")
         self.centerline = data[:, 0:2]
         self.centerline = np.vstack((self.centerline[-1], self.centerline, self.centerline[0]))
+
+        if raceline_filepath is not None:
+            self.raceline = np.loadtxt(raceline_filepath, comments="#", delimiter=",")
+        else:
+            self.raceline = None
 
         centerline_gradient = np.gradient(self.centerline, axis=0)
         # Unfortunate Warning Print: https://github.com/numpy/numpy/issues/26620
@@ -56,3 +61,6 @@ class RaceTrack:
         axis.add_patch(self.mpl_centerline_patch)
         axis.add_patch(self.mpl_right_track_limit_patch)
         axis.add_patch(self.mpl_left_track_limit_patch)
+
+        if self.raceline is not None:
+            axis.plot(self.raceline[:, 0], self.raceline[:, 1], "--", color="orange", lw=1, label="Raceline")
