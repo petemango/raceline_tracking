@@ -171,9 +171,11 @@ def lower_controller(
 def generate_speed_profile(path, parameters):
     """
     Generates a velocity profile for the raceline.
+    Returns: (speed_profile, curvature_profile)
     """
     n_points = len(path)
-    profile = np.zeros(n_points)
+    speed_profile = np.zeros(n_points)
+    curvature_profile = np.zeros(n_points)
     
     # Parameters
     max_v = parameters[5]
@@ -207,12 +209,14 @@ def generate_speed_profile(path, parameters):
         else:
             k = (4 * area) / (l1 * l2 * l3)
             
+        curvature_profile[i] = k
+
         if k < 1e-4:
             v_limit = max_v
         else:
             v_limit = np.sqrt(max_lat_accel / k)
             
-        profile[i] = min(v_limit, max_v)
+        speed_profile[i] = min(v_limit, max_v)
         
     # 2. Backward Pass (Braking Limits)
     # Ensure we can actually slow down to v_limit from the previous point
@@ -223,17 +227,17 @@ def generate_speed_profile(path, parameters):
         dist = np.linalg.norm(path[next_i] - path[i])
         
         # Allowed entry speed based on exit speed and braking
-        allowed_entry_sq = profile[next_i]**2 + 2 * max_braking * dist
+        allowed_entry_sq = speed_profile[next_i]**2 + 2 * max_braking * dist
         allowed_entry = np.sqrt(allowed_entry_sq)
         
-        profile[i] = min(profile[i], allowed_entry)
+        speed_profile[i] = min(speed_profile[i], allowed_entry)
         
     # Run backward pass twice to handle the loop closure properly
     for i in range(n_points - 1, -1, -1):
         next_i = (i + 1) % n_points
         dist = np.linalg.norm(path[next_i] - path[i])
-        allowed_entry_sq = profile[next_i]**2 + 2 * max_braking * dist
-        profile[i] = min(profile[i], np.sqrt(allowed_entry_sq))
+        allowed_entry_sq = speed_profile[next_i]**2 + 2 * max_braking * dist
+        speed_profile[i] = min(speed_profile[i], np.sqrt(allowed_entry_sq))
 
     # 3. Forward Pass (Acceleration Limits)
     # v_{i+1}^2 <= v_i^2 + 2 * a_accel * distance
@@ -244,10 +248,10 @@ def generate_speed_profile(path, parameters):
         prev_i = (i - 1) % n_points
         dist = np.linalg.norm(path[i] - path[prev_i])
         
-        allowed_exit_sq = profile[prev_i]**2 + 2 * max_accel * dist
-        profile[i] = min(profile[i], np.sqrt(allowed_exit_sq))
+        allowed_exit_sq = speed_profile[prev_i]**2 + 2 * max_accel * dist
+        speed_profile[i] = min(speed_profile[i], np.sqrt(allowed_exit_sq))
         
-    return profile
+    return speed_profile, curvature_profile
 
 def controller(
     state : ArrayLike, parameters : ArrayLike, racetrack : RaceTrack
@@ -259,7 +263,7 @@ def controller(
 
     # Generate speed profile if not exists
     if not hasattr(racetrack, 'speed_profile'):
-        racetrack.speed_profile = generate_speed_profile(racetrack.raceline, parameters)
+        racetrack.speed_profile, racetrack.curvature_profile = generate_speed_profile(racetrack.raceline, parameters)
         
     # Initialize tracking state
     if not hasattr(racetrack, 'last_idx'):
@@ -267,6 +271,7 @@ def controller(
     
     path = racetrack.raceline
     profile = racetrack.speed_profile
+    curvatures = racetrack.curvature_profile
     
     car_pos = state[0:2]
     car_vel = state[3]
@@ -284,6 +289,70 @@ def controller(
     # Look ahead slightly for velocity to account for delay
     lookahead_idx = (current_idx + 2) % len(path)
     desired_vel = profile[lookahead_idx]
+
+    # --- Error-aware speed governor (Idea 1) ---
+    # Normalize CTE by local half-width and HE by a small reference angle.
+    # This ensures higher speeds are only allowed when tracking quality is good.
+    # Local half-width from nearest centerline point
+    car_pos = state[0:2]
+    centerline = racetrack.centerline
+    center_idx = get_closest_index(car_pos, centerline)
+    center_pt = centerline[center_idx]
+    right_pt = racetrack.right_boundary[center_idx]
+    left_pt = racetrack.left_boundary[center_idx]
+
+    w_right = np.linalg.norm(right_pt - center_pt)
+    w_left = np.linalg.norm(left_pt - center_pt)
+    w_half = 0.5 * (w_right + w_left)
+    w_half = max(w_half, 1e-3)
+
+    cte_norm = abs(cte) / w_half
+    he_ref = np.deg2rad(10.0)
+    he_norm = abs(he) / max(he_ref, 1e-3)
+    e_n = max(cte_norm, he_norm)
+
+    # Conservative mapping from tracking error to a speed limit
+    v_max = parameters[5]
+    v_max_track = min(v_max, 50.0)
+    v_min_safe = 2.0
+    e1 = 0.25
+    e2 = 0.75
+
+    if e_n <= e1:
+        v_error_limit = v_max_track
+    elif e_n >= e2:
+        v_error_limit = v_min_safe
+    else:
+        alpha = (e2 - e_n) / (e2 - e1)
+        v_error_limit = v_min_safe + (v_max_track - v_min_safe) * alpha
+
+    desired_vel = min(desired_vel, v_error_limit)
+    
+    # Calculate Feedforward Steering
+    # Use curvature at the closest point (or slightly ahead)
+    # The path curvature sign calculation in generate_speed_profile is unsigned (abs area),
+    # but we need signed curvature to know if turning left or right.
+    # Let's re-evaluate the sign of the curvature based on the path geometry or assume LQR handles the sign?
+    # No, feedforward MUST have the correct sign.
+    # generate_speed_profile used "area", which is unsigned. We need signed curvature.
+    # However, we can infer the direction.
+    # Alternatively, we can re-calculate simple signed curvature here locally.
+    
+    # Local curvature calculation for feedforward:
+    p1 = path[(current_idx - 1) % len(path)]
+    p2 = path[current_idx]
+    p3 = path[(current_idx + 1) % len(path)]
+    v1 = p2 - p1
+    v2 = p3 - p2
+    # Cross product z-component: v1.x * v2.y - v1.y * v2.x
+    cross_z = v1[0]*v2[1] - v1[1]*v2[0]
+    # Curvature k magnitude is stored, we just need sign.
+    # Actually, let's just trust the magnitude from the profile and apply the sign from cross product.
+    k_mag = curvatures[current_idx]
+    k_sign = np.sign(cross_z) if abs(cross_z) > 1e-8 else 0.0
+    k_signed = k_mag * k_sign
+    
+    delta_ff = np.arctan(wheelbase * k_signed)
     
     # 4. LQR Formulation
     # State x = [cte, he, delta]
@@ -308,8 +377,10 @@ def controller(
     
     K = solve_lqr(A, B, Q, R)
     
-    # Control Law: u = -K * x
-    x_error = np.array([[cte], [he], [car_steer]])
+    # Control Law: u = -K * (x - x_ref)
+    # Target state: 0 CTE, 0 HE, and delta = delta_ff
+    x_error = np.array([[cte], [he], [car_steer - delta_ff]])
+    
     u_opt = -K @ x_error
     steer_rate = u_opt[0, 0]
     

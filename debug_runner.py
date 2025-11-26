@@ -1,0 +1,100 @@
+import sys
+import numpy as np
+# Mock matplotlib to avoid display errors if any imports trigger it
+import sys
+from unittest.mock import MagicMock
+sys.modules["matplotlib"] = MagicMock()
+sys.modules["matplotlib.pyplot"] = MagicMock()
+sys.modules["matplotlib.path"] = MagicMock()
+sys.modules["matplotlib.patches"] = MagicMock()
+sys.modules["matplotlib.axes"] = MagicMock()
+
+# Now import the project modules
+from racetrack import RaceTrack
+from racecar import RaceCar
+from controller import controller, lower_controller, get_track_errors
+
+def run_simulation(track_file, raceline_file, max_steps=5000):
+    print(f"--- Running Simulation for {track_file} ---")
+    # We can't use the normal RaceTrack because it imports matplotlib in __init__
+    # Wait, looking at racetrack.py, it does:
+    # import matplotlib.path as path ...
+    # So my mocks above should handle it.
+    
+    try:
+        rt = RaceTrack(track_file, raceline_file)
+    except Exception as e:
+        print(f"Failed to load racetrack: {e}")
+        # If it fails due to the mocks not behaving like real mpl objects (e.g. path.Path), 
+        # I might need a more robust mock or just comment out the plotting parts in racetrack.py.
+        # Let's try running.
+        return []
+
+    car = RaceCar(rt.initial_state.T)
+    
+    history = []
+
+    for step in range(max_steps):
+        try:
+            desired = controller(car.state, car.parameters, rt)
+            cont = lower_controller(car.state, desired, car.parameters)
+        except Exception as e:
+            print(f"Controller crashed at step {step}: {e}")
+            import traceback
+            traceback.print_exc()
+            break
+
+        car.update(cont)
+        
+        # Calculate errors for logging
+        cte, he = 0.0, 0.0
+        if hasattr(rt, 'last_idx') and rt.last_idx is not None:
+            # We need to import get_track_errors from controller
+            cte, he = get_track_errors(car.state, rt.raceline, known_idx=rt.last_idx)
+        
+        pos = car.state[0:2]
+        vel = car.state[3]
+        steer = car.state[2]
+        
+        history.append({
+            "step": step,
+            "time": step * 0.1, 
+            "x": pos[0], "y": pos[1],
+            "vel": vel,
+            "steer": steer,
+            "cte": cte,
+            "he": he
+        })
+    
+    return history
+
+if __name__ == "__main__":
+    # IMS
+    print("Analyzing IMS...")
+    # IMS_raceline.csv might look different or have specific start points
+    ims_hist = run_simulation("racetracks/IMS.csv", "racetracks/IMS_raceline.csv", max_steps=100) 
+    
+    print("\n[IMS Start Analysis (First 3s)]")
+    for i in range(0, min(30, len(ims_hist)), 2):
+        h = ims_hist[i]
+        print(f"T={h['time']:.1f}s | V={h['vel']:.2f} | Steer={h['steer']:.3f} | CTE={h['cte']:.3f} | HE={h['he']:.3f}")
+
+    # Montreal
+    print("\nAnalyzing Montreal...")
+    montreal_hist = run_simulation("racetracks/Montreal.csv", "racetracks/Montreal_raceline.csv", max_steps=3000)
+    
+    print("\n[Montreal High CTE Events]")
+    max_cte = 0
+    max_cte_idx = -1
+    for i, h in enumerate(montreal_hist):
+        if abs(h['cte']) > max_cte:
+            max_cte = abs(h['cte'])
+            max_cte_idx = i
+            
+    if max_cte_idx != -1:
+        print(f"Max CTE found at Step {max_cte_idx} (T={montreal_hist[max_cte_idx]['time']:.1f}s)")
+        start_window = max(0, max_cte_idx - 5)
+        end_window = min(len(montreal_hist), max_cte_idx + 5)
+        for i in range(start_window, end_window):
+            h = montreal_hist[i]
+            print(f"T={h['time']:.1f}s | V={h['vel']:.2f} | Steer={h['steer']:.3f} | CTE={h['cte']:.3f} | HE={h['he']:.3f}")
