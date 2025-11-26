@@ -22,6 +22,8 @@ class Simulator:
 
         self.car = RaceCar(self.rt.initial_state.T)
 
+        self.trajectory = []
+
         self.lap_time_elapsed = 0
         self.lap_start_time = None
         self.lap_finished = False
@@ -83,6 +85,25 @@ class Simulator:
             self.car.update(cont)
             self.update_status()
             self.check_track_limits()
+            
+            # Record Trajectory
+            self.trajectory.append([self.car.state[0], self.car.state[1], self.car.state[3]])
+
+            # Plot Trajectory with speed-based coloring
+            if len(self.trajectory) > 1:
+                trajectory_array = np.array(self.trajectory)
+                for i in range(len(trajectory_array) - 1):
+                    speed = trajectory_array[i, 2]
+                    if speed < 20:
+                        color = 'red'
+                    elif speed < 50:
+                        ratio = (speed - 20) / 30
+                        color = (1.0, ratio * 0.65, 0.0)
+                    else:
+                        ratio = (speed - 50) / 50
+                        color = ((1.0 - ratio), 0.65 + ratio * 0.35, 0.0)
+                    self.axis.plot(trajectory_array[i:i+2, 0], trajectory_array[i:i+2, 1], 
+                                 color=color, linewidth=2, alpha=0.8)
 
             self.axis.arrow(
                 self.car.state[0], self.car.state[1], \
