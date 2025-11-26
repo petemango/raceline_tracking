@@ -35,85 +35,103 @@ def solve_lqr(A, B, Q, R):
     
     return K
 
-def get_track_errors(car_state, path):
+def get_closest_index(point, path, last_idx=None, window=100):
+    """
+    Finds the closest point on the path.
+    If last_idx is provided, searches locally around it.
+    """
+    n_points = len(path)
+    
+    if last_idx is None:
+        # Global search
+        dists = np.linalg.norm(path - point, axis=1)
+        return np.argmin(dists)
+    
+    # Windowed search
+    indices = []
+    # Look slightly backward and mostly forward
+    start = -int(window * 0.2)
+    end = int(window)
+    
+    for i in range(start, end):
+        indices.append((last_idx + i) % n_points)
+        
+    indices = np.array(indices)
+    local_path = path[indices]
+    
+    dists = np.linalg.norm(local_path - point, axis=1)
+    best_local_idx = np.argmin(dists)
+    
+    return indices[best_local_idx]
+
+def get_track_errors(car_state, path, known_idx=None):
     """
     Calculates the Cross Track Error (CTE) and Heading Error (HE).
     """
     car_pos = car_state[0:2]
     car_heading = car_state[4]
     
-    # 1. Find the closest point (simple search)
-    dists = np.linalg.norm(path - car_pos, axis=1)
-    closest_idx = np.argmin(dists)
+    # 1. Find the closest point
+    if known_idx is not None:
+        closest_idx = known_idx
+    else:
+        closest_idx = get_closest_index(car_pos, path)
     
     # 2. Identify the segment (Point A -> Point B)
-    # We need to check if we are "behind" or "ahead" of the closest point to pick the right segment.
-    # Simple heuristic: Look at the next point in the sequence.
-    # Handle wrap-around
     next_idx = (closest_idx + 1) % len(path)
     prev_idx = (closest_idx - 1) % len(path)
     
-    # Construct two potential segments
     vec_next = path[next_idx] - path[closest_idx]
-    vec_prev = path[closest_idx] - path[prev_idx]
-    
-    # Vector from closest point to car
     vec_car = car_pos - path[closest_idx]
     
     # Project car onto both segments to see which one is "active"
-    # Dot product > 0 means the car is "ahead" of the closest point in that direction
     if np.dot(vec_car, vec_next) >= 0:
-        # Segment is Closest -> Next
         p1 = path[closest_idx]
         p2 = path[next_idx]
     else:
-        # Segment is Prev -> Closest
         p1 = path[prev_idx]
         p2 = path[closest_idx]
         
-    # 3. Calculate CTE (Distance from Point to Line Segment)
-    # Vector of the segment
+    # 3. Calculate CTE
     segment_vec = p2 - p1
     segment_len = np.linalg.norm(segment_vec)
     if segment_len < 1e-6:
-        return 0.0, 0.0 # Should not happen
+        return 0.0, 0.0
         
     segment_unit_vec = segment_vec / segment_len
-    
-    # Vector from p1 to car
     p1_to_car = car_pos - p1
-    
-    # Projection length along the segment
     proj_len = np.dot(p1_to_car, segment_unit_vec)
-    
-    # Closest point on the line (clamped to segment, though we picked the closest segment so it should be within or close)
     closest_point_on_line = p1 + segment_unit_vec * proj_len
-    
-    # CTE Vector
     cte_vec = car_pos - closest_point_on_line
     cte = np.linalg.norm(cte_vec)
     
-    # Determine sign of CTE (Left or Right of track)
-    # Cross product of segment vector and (0,0,1) gives the left normal
-    # But simpler: Cross product of segment and vector to car
+    # Sign of CTE
     cross_prod = segment_vec[0] * p1_to_car[1] - segment_vec[1] * p1_to_car[0]
     if cross_prod < 0:
-        cte = -cte # Right of track
+        cte = -cte 
     else:
-        cte = cte # Left of track
+        cte = cte 
         
     # 4. Calculate Heading Error
     track_heading = np.arctan2(segment_vec[1], segment_vec[0])
     heading_error = car_heading - track_heading
-    
-    # Normalize heading error to [-pi, pi]
     heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
     
     return cte, heading_error
 
-def get_closest_index(point, path):
-    dists = np.linalg.norm(path - point, axis=1)
-    return np.argmin(dists)
+def lower_controller(
+    state : ArrayLike, desired : ArrayLike, parameters : ArrayLike
+) -> ArrayLike:
+    # ... (rest of lower_controller same as before, included for context if needed but we can skip if not editing)
+    # For safety in 'replace', I will match the block boundaries carefully.
+    # Since I cannot skip middle parts easily, I will target get_track_errors -> controller
+    pass
+
+# To minimize token usage and potential errors, I will do two replacements if needed, 
+# or one big one covering get_track_errors to controller.
+
+# Let's stick to replacing get_track_errors ... controller
+
 
 
 def lower_controller(
@@ -159,7 +177,7 @@ def generate_speed_profile(path, parameters):
     
     # Parameters
     max_v = parameters[5]
-    max_lat_accel = 20.0 # Increased for higher performance
+    max_lat_accel = 10.0 # Reduced for safety
     max_braking = np.abs(parameters[8]) # u2_min is negative
     max_accel = parameters[10]
     
@@ -242,6 +260,10 @@ def controller(
     # Generate speed profile if not exists
     if not hasattr(racetrack, 'speed_profile'):
         racetrack.speed_profile = generate_speed_profile(racetrack.raceline, parameters)
+        
+    # Initialize tracking state
+    if not hasattr(racetrack, 'last_idx'):
+        racetrack.last_idx = None
     
     path = racetrack.raceline
     profile = racetrack.speed_profile
@@ -251,24 +273,26 @@ def controller(
     car_steer = state[2]
     wheelbase = parameters[0]
     
-    # 1. Get Errors
-    cte, he = get_track_errors(state, path)
+    # 1. Find closest point (Windowed Search)
+    current_idx = get_closest_index(car_pos, path, last_idx=racetrack.last_idx, window=100)
+    racetrack.last_idx = current_idx
     
-    # 2. Get Target Velocity from Profile
-    # Use the closest point's profiled speed
-    closest_idx = get_closest_index(car_pos, path)
+    # 2. Get Errors using the KNOWN index (Fixes latching onto wrong segment)
+    cte, he = get_track_errors(state, path, known_idx=current_idx)
     
+    # 3. Get Target Velocity from Profile
     # Look ahead slightly for velocity to account for delay
-    lookahead_idx = (closest_idx + 2) % len(path)
+    lookahead_idx = (current_idx + 2) % len(path)
     desired_vel = profile[lookahead_idx]
     
-    # 3. LQR Formulation
+    # 4. LQR Formulation
     # State x = [cte, he, delta]
     # Input u = v_delta (steering rate)
     
     # Linearization Velocity
     # Use current velocity, but prevent singularity at 0
-    v = max(car_vel, 1.0) 
+    # Higher minimum velocity (e.g. 10.0) prevents aggressive gains at start/low speed
+    v = max(car_vel, 10.0) 
     
     A = np.zeros((3, 3))
     A[0, 1] = v            # dot_e = v * theta_e
@@ -279,7 +303,7 @@ def controller(
     
     # Tunable Weights
     # Penalize Cross Track Error heavily to avoid violations
-    Q = np.diag([5.0, 0.5, 0.0]) 
+    Q = np.diag([20.0, 0.5, 0.0]) 
     R = np.array([[5.0]])
     
     K = solve_lqr(A, B, Q, R)
@@ -289,7 +313,7 @@ def controller(
     u_opt = -K @ x_error
     steer_rate = u_opt[0, 0]
     
-    # 4. Interface with Lower Controller
+    # 5. Interface with Lower Controller
     # The lower controller is: rate = 5.0 * (desired - current)
     # So: desired = current + rate / 5.0
     Kp_steer = 5.0
