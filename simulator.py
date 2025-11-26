@@ -11,11 +11,12 @@ from controller import lower_controller, controller
 
 class Simulator:
 
-    def __init__(self, rt : RaceTrack):
+    def __init__(self, rt : RaceTrack, raceline=None):
         matplotlib.rcParams["figure.dpi"] = 300
         matplotlib.rcParams["font.size"] = 8
 
         self.rt = rt
+        self.raceline = raceline  # Optimal racing line
         self.figure, self.axis = plt.subplots(1, 1)
 
         self.axis.set_xlabel("X"); self.axis.set_ylabel("Y")
@@ -70,7 +71,16 @@ class Simulator:
     def run(self):
         try:
             if self.lap_finished:
-                exit()
+                # Stop the timer and print results
+                self.timer.stop()
+                print("\n" + "="*50)
+                print("LAP COMPLETED!")
+                print("="*50)
+                print(f"Lap Time: {self.lap_time_elapsed:.2f} seconds")
+                print(f"Track Violations: {self.track_limit_violations}")
+                print("="*50)
+                plt.close(self.figure)
+                return False
 
             self.figure.canvas.flush_events()
             self.axis.cla()
@@ -80,7 +90,7 @@ class Simulator:
             self.axis.set_xlim(self.car.state[0] - 200, self.car.state[0] + 200)
             self.axis.set_ylim(self.car.state[1] - 200, self.car.state[1] + 200)
 
-            desired = controller(self.car.state, self.car.parameters, self.rt)
+            desired = controller(self.car.state, self.car.parameters, self.rt, self.raceline)
             cont = lower_controller(self.car.state, desired, self.car.parameters)
             self.car.update(cont)
             self.update_status()
@@ -138,12 +148,14 @@ class Simulator:
     def update_status(self):
         progress = np.linalg.norm(self.car.state[0:2] - self.rt.centerline[0, 0:2], 2)
 
-        if progress > 10.0 and not self.lap_started:
+        if progress > 20.0 and not self.lap_started:
             self.lap_started = True
     
-        if progress <= 1.0 and self.lap_started and not self.lap_finished:
+        # Lap completes when car returns within 5 meters of start (was 1m - too strict)
+        if progress <= 5.0 and self.lap_started and not self.lap_finished:
             self.lap_finished = True
             self.lap_time_elapsed = time() - self.lap_start_time
+            print(f"\n*** LAP FINISHED: {self.lap_time_elapsed:.2f}s, Violations: {self.track_limit_violations} ***")
 
         if not self.lap_finished and self.lap_start_time is not None:
             self.lap_time_elapsed = time() - self.lap_start_time
