@@ -11,11 +11,6 @@ class RaceTrack:
         self.centerline = data[:, 0:2]
         self.centerline = np.vstack((self.centerline[-1], self.centerline, self.centerline[0]))
 
-        if raceline_filepath is not None:
-            self.raceline = np.loadtxt(raceline_filepath, comments="#", delimiter=",")
-        else:
-            self.raceline = None
-
         centerline_gradient = np.gradient(self.centerline, axis=0)
         # Unfortunate Warning Print: https://github.com/numpy/numpy/issues/26620
         centerline_cross = np.cross(centerline_gradient, np.array([0.0, 0.0, 1.0]))
@@ -27,6 +22,12 @@ class RaceTrack:
 
         self.centerline = np.delete(self.centerline, 0, axis=0)
         self.centerline = np.delete(self.centerline, -1, axis=0)
+
+        # If a raceline file is provided, load it; otherwise use the centerline as the raceline.
+        if raceline_filepath is not None:
+            self.raceline = np.loadtxt(raceline_filepath, comments="#", delimiter=",")
+        else:
+            self.raceline = self.centerline
 
         # Compute track left and right boundaries
         self.right_boundary = self.centerline[:, :2] + centerline_norm[:, :2] * np.expand_dims(data[:, 2], axis=1)
