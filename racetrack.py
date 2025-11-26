@@ -33,15 +33,24 @@ class RaceTrack:
         self.right_boundary = self.centerline[:, :2] + centerline_norm[:, :2] * np.expand_dims(data[:, 2], axis=1)
         self.left_boundary = self.centerline[:, :2] - centerline_norm[:, :2]*np.expand_dims(data[:, 3], axis=1)
 
-        # Compute initial position and heading
+        # Compute initial position and heading.
+        # If a raceline is available, start on the first raceline point with
+        # heading aligned to the next raceline point; otherwise fall back to
+        # the centerline start and heading.
+        if self.raceline is not None:
+            start_xy = self.raceline[0, :2]
+            next_xy = self.raceline[1, :2]
+        else:
+            start_xy = self.centerline[0, :2]
+            next_xy = self.centerline[1, :2]
+
+        heading = np.arctan2(next_xy[1] - start_xy[1], next_xy[0] - start_xy[0])
+
         self.initial_state = np.array([
-            self.centerline[0, 0],
-            self.centerline[0, 1],
+            start_xy[0],
+            start_xy[1],
             0.0, 0.0,
-            np.arctan2(
-                self.centerline[1, 1] - self.centerline[0, 1], 
-                self.centerline[1, 0] - self.centerline[0, 0]
-            )
+            heading
         ])
 
         # Matplotlib Plots

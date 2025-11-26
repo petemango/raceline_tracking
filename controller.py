@@ -316,14 +316,14 @@ def controller(
     w_half = max(w_half, 1e-3)
 
     cte_norm = abs(cte) / w_half
-    he_ref = np.deg2rad(10.0)
+    he_ref = np.deg2rad(5.0)
     he_norm = abs(he) / max(he_ref, 1e-3)
     e_n = max(cte_norm, he_norm)
 
     # Conservative mapping from tracking error to a speed limit
     v_max = parameters[5]
     v_max_track = v_max
-    v_min_safe = 2.0
+    v_min_safe = 1.0
     e1 = 0.25
     e2 = 0.75
 
@@ -336,6 +336,86 @@ def controller(
         v_error_limit = v_min_safe + (v_max_track - v_min_safe) * alpha
 
     desired_vel = min(desired_vel, v_error_limit)
+
+    # --- Heading-based look-ahead wall safety ---
+    # Look ahead along the current heading and estimate the distance to the
+    # first potential wall intersection within a finite horizon. Use this
+    # to further limit speed so that we can brake in discrete time before
+    # reaching that point.
+    v = car_vel
+    v_abs = abs(v)
+    if v_abs > 1e-3:
+        # Heading direction (assume positive velocity along heading).
+        car_heading = state[4]
+        heading_dir = np.array([np.cos(car_heading), np.sin(car_heading)])
+
+        # Effective deceleration capability toward the wall, chosen as a
+        # conservative fraction of the car's maximum braking.
+        a_brake_max = parameters[10]
+        a_wall = 0.5 * a_brake_max  # m/s^2
+        dt = 0.1                    # controller/vehicle time step (s)
+
+        # Stopping distance in discrete time: one-step motion plus braking
+        # distance with deceleration a_wall.
+        s_step = v_abs * dt
+        s_brake = (v_abs * v_abs) / (2.0 * a_wall)
+
+        # Extra longitudinal safety margin to account for geometry and
+        # discretization.
+        margin0 = 2.0  # m
+
+        # Horizon distance: at least enough to stop plus margin, but bounded.
+        s_brake_max = (v_max * v_max) / (2.0 * a_wall)
+        horizon_base = s_step + s_brake + margin0
+        horizon_min = 10.0
+        horizon_max = s_brake_max + margin0
+        horizon = max(horizon_min, min(horizon_base, horizon_max))
+
+        left_boundary = racetrack.left_boundary
+        right_boundary = racetrack.right_boundary
+        n_points = centerline.shape[0]
+
+        max_look_indices = min(n_points, 120)
+        # Small lateral tolerance around the heading ray; raceline is guaranteed
+        # to be at least 0.5 m from walls, so this ensures we do not trigger the
+        # wall look-ahead while cleanly following the raceline.
+        wall_hit_tol = 0.1  # m
+
+        min_s_collision = None
+
+        for k in range(max_look_indices):
+            idx = (center_idx + k) % n_points
+
+            for wall_pt in (left_boundary[idx], right_boundary[idx]):
+                r = wall_pt - car_pos
+                s = float(np.dot(r, heading_dir))
+                if s <= 0.0 or s > horizon:
+                    continue
+
+                r_norm_sq = float(np.dot(r, r))
+                d_perp_sq = r_norm_sq - s * s
+                if d_perp_sq < 0.0:
+                    d_perp_sq = 0.0
+                d_perp = float(np.sqrt(d_perp_sq))
+
+                if d_perp <= wall_hit_tol:
+                    if min_s_collision is None or s < min_s_collision:
+                        min_s_collision = s
+
+        if min_s_collision is not None:
+            # Available distance along heading beyond a fixed safety margin.
+            s_margin = max(min_s_collision - margin0, 0.0)
+            if s_margin <= 0.0:
+                v_heading_limit = 0.0
+            else:
+                # Solve v*dt + v^2/(2*a_wall) <= s_margin for the maximum safe v.
+                disc_h = dt * dt + 2.0 * s_margin / a_wall
+                if disc_h <= 0.0:
+                    v_heading_limit = 0.0
+                else:
+                    v_heading_limit = a_wall * (-dt + np.sqrt(disc_h))
+
+            desired_vel = min(desired_vel, v_heading_limit)
 
     # Calculate Feedforward Steering
     # Use curvature at the closest point (or slightly ahead)
