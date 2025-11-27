@@ -31,6 +31,7 @@ class RaceTrack:
         if raceline_filepath is not None:
             self.raceline = np.loadtxt(raceline_filepath, comments="#", delimiter=",")
         else:
+            print(f'Raceline not provided!!!!!!! Defaulting to centerline.')
             self.raceline = self.centerline
 
         # Compute track left and right boundaries
