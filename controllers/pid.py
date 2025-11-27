@@ -3,6 +3,7 @@ from numpy.typing import ArrayLike
 
 _pid_state = {}
 
+
 def reset_lower_controller_state() -> None:
     global _pid_state
     _pid_state = {
@@ -13,9 +14,13 @@ def reset_lower_controller_state() -> None:
         "previous_velocity_error": 0.0,
     }
 
+
 reset_lower_controller_state()
 
-def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike) -> ArrayLike:
+
+def lower_controller(
+    state: ArrayLike, desired: ArrayLike, parameters: ArrayLike
+) -> ArrayLike:
     global _pid_state
     delta_time = 0.1
 
@@ -37,13 +42,23 @@ def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike
     # Steering PID
     error_steering = desired_steering_angle - current_steering_angle
     kp_steering, ki_steering, kd_steering = 4.0, 0.5, 0.1
-    
+
     # Integration and Derivative
-    new_integral_steering = _pid_state["integral_steering_error"] + error_steering * delta_time
-    derivative_steering = (error_steering - _pid_state["previous_steering_error"]) / delta_time
-    
-    raw_steering_rate = kp_steering * error_steering + ki_steering * new_integral_steering + kd_steering * derivative_steering
-    commanded_steering_rate = float(np.clip(raw_steering_rate, min_steering_rate, max_steering_rate))
+    new_integral_steering = (
+        _pid_state["integral_steering_error"] + error_steering * delta_time
+    )
+    derivative_steering = (
+        error_steering - _pid_state["previous_steering_error"]
+    ) / delta_time
+
+    raw_steering_rate = (
+        kp_steering * error_steering
+        + ki_steering * new_integral_steering
+        + kd_steering * derivative_steering
+    )
+    commanded_steering_rate = float(
+        np.clip(raw_steering_rate, min_steering_rate, max_steering_rate)
+    )
 
     # Anti-windup: only update integral if not saturated
     if commanded_steering_rate == raw_steering_rate:
@@ -54,11 +69,21 @@ def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike
     error_velocity = desired_velocity - current_velocity
     kp_velocity, ki_velocity, kd_velocity = 1.5, 0.4, 0.05
 
-    new_integral_velocity = _pid_state["integral_velocity_error"] + error_velocity * delta_time
-    derivative_velocity = (error_velocity - _pid_state["previous_velocity_error"]) / delta_time
+    new_integral_velocity = (
+        _pid_state["integral_velocity_error"] + error_velocity * delta_time
+    )
+    derivative_velocity = (
+        error_velocity - _pid_state["previous_velocity_error"]
+    ) / delta_time
 
-    raw_acceleration = kp_velocity * error_velocity + ki_velocity * new_integral_velocity + kd_velocity * derivative_velocity
-    commanded_acceleration = float(np.clip(raw_acceleration, min_acceleration, max_acceleration))
+    raw_acceleration = (
+        kp_velocity * error_velocity
+        + ki_velocity * new_integral_velocity
+        + kd_velocity * derivative_velocity
+    )
+    commanded_acceleration = float(
+        np.clip(raw_acceleration, min_acceleration, max_acceleration)
+    )
 
     # Anti-windup
     if commanded_acceleration == raw_acceleration:
