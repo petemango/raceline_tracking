@@ -12,7 +12,7 @@ sys.modules["matplotlib.axes"] = MagicMock()
 # Now import the project modules
 from racetrack import RaceTrack
 from racecar import RaceCar
-from controller import controller, lower_controller, get_track_errors
+from controller import controller, lower_controller, get_track_errors, reset_lower_controller_state
 
 def run_simulation(track_file, raceline_file, max_steps=5000):
     print(f"--- Running Simulation for {track_file} ---")
@@ -21,6 +21,9 @@ def run_simulation(track_file, raceline_file, max_steps=5000):
     # import matplotlib.path as path ...
     # So my mocks above should handle it.
     
+    # Reset low-level PID state for a fresh run.
+    reset_lower_controller_state()
+
     try:
         rt = RaceTrack(track_file, raceline_file)
     except Exception as e:
@@ -55,15 +58,28 @@ def run_simulation(track_file, raceline_file, max_steps=5000):
         pos = car.state[0:2]
         vel = car.state[3]
         steer = car.state[2]
-        
+
+        steer_rate = cont[0]
+        accel = cont[1]
+
+        desired_steer = desired[0]
+        desired_vel = desired[1]
+
+        last_idx = getattr(rt, "last_idx", None)
+
         history.append({
             "step": step,
-            "time": step * 0.1, 
+            "time": step * 0.1,
             "x": pos[0], "y": pos[1],
             "vel": vel,
             "steer": steer,
+            "steer_rate": steer_rate,
+            "accel": accel,
+            "desired_steer": desired_steer,
+            "desired_vel": desired_vel,
             "cte": cte,
-            "he": he
+            "he": he,
+            "idx": last_idx
         })
     
     return history
@@ -79,10 +95,24 @@ if __name__ == "__main__":
         h = ims_hist[i]
         print(f"T={h['time']:.1f}s | V={h['vel']:.2f} | Steer={h['steer']:.3f} | CTE={h['cte']:.3f} | HE={h['he']:.3f}")
 
-    # Montreal
-    print("\nAnalyzing Montreal...")
+    print("\n[Montreal Analysis]")
     montreal_hist = run_simulation("racetracks/Montreal.csv", "racetracks/Montreal_raceline.csv", max_steps=3000)
     
+    # Check for CTE violations and progress
+    violations = [h for h in montreal_hist if abs(h['cte']) > 2.0]
+    print(f"Steps with CTE > 2.0m: {len(violations)}")
+    if violations:
+        v = violations[0]
+        print(f"First violation at T={v['time']:.1f}s, CTE={v['cte']:.3f}")
+
+    # Print checkpoints
+    for t in range(0, 300, 20):
+        # Find nearest step
+        step_idx = int(t * 10)
+        if step_idx < len(montreal_hist):
+            h = montreal_hist[step_idx]
+            print(f"T={h['time']:.1f}s | V={h['vel']:.2f} | Steer={h['steer']:.3f} | CTE={h['cte']:.3f} | Idx={h['idx']}")
+
     print("\n[Montreal High CTE Events]")
     max_cte = 0
     max_cte_idx = -1

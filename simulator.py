@@ -7,7 +7,7 @@ from time import time
 
 from racetrack import RaceTrack
 from racecar import RaceCar
-from controller import lower_controller, controller
+from controller import lower_controller, controller, reset_lower_controller_state
 
 class Simulator:
 
@@ -16,6 +16,9 @@ class Simulator:
         matplotlib.rcParams["font.size"] = 8
 
         self.rt = rt
+
+        # Ensure low-level PID state is clean for this simulation.
+        reset_lower_controller_state()
         self.figure, self.axis = plt.subplots(1, 1)
 
         self.axis.set_xlabel("X"); self.axis.set_ylabel("Y")
