@@ -12,7 +12,8 @@ sys.modules["matplotlib.axes"] = MagicMock()
 # Now import the project modules
 from racetrack import RaceTrack
 from racecar import RaceCar
-from controller import controller, lower_controller, get_track_errors, reset_lower_controller_state
+from controllers import controller, lower_controller, reset_lower_controller_state
+from controllers.utils import get_track_errors
 
 def run_simulation(track_file, raceline_file, max_steps=5000):
     print(f"--- Running Simulation for {track_file} ---")
@@ -127,4 +128,27 @@ if __name__ == "__main__":
         end_window = min(len(montreal_hist), max_cte_idx + 5)
         for i in range(start_window, end_window):
             h = montreal_hist[i]
+            print(f"T={h['time']:.1f}s | V={h['vel']:.2f} | Steer={h['steer']:.3f} | CTE={h['cte']:.3f} | HE={h['he']:.3f}")
+
+    # Monza
+    print("\n[Monza Analysis]")
+    monza_hist = run_simulation("racetracks/Monza.csv", "racetracks/Monza_raceline.csv", max_steps=3000)
+    
+    violations = [h for h in monza_hist if abs(h['cte']) > 2.0]
+    print(f"Steps with CTE > 2.0m: {len(violations)}")
+    
+    print("\n[Monza High CTE Events]")
+    max_cte = 0
+    max_cte_idx = -1
+    for i, h in enumerate(monza_hist):
+        if abs(h['cte']) > max_cte:
+            max_cte = abs(h['cte'])
+            max_cte_idx = i
+            
+    if max_cte_idx != -1:
+        print(f"Max CTE found at Step {max_cte_idx} (T={monza_hist[max_cte_idx]['time']:.1f}s)")
+        start_window = max(0, max_cte_idx - 5)
+        end_window = min(len(monza_hist), max_cte_idx + 5)
+        for i in range(start_window, end_window):
+            h = monza_hist[i]
             print(f"T={h['time']:.1f}s | V={h['vel']:.2f} | Steer={h['steer']:.3f} | CTE={h['cte']:.3f} | HE={h['he']:.3f}")

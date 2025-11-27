@@ -7,7 +7,7 @@ from time import time
 
 from racetrack import RaceTrack
 from racecar import RaceCar
-from controller import lower_controller, controller, reset_lower_controller_state
+from controllers import lower_controller, controller, reset_lower_controller_state
 
 class Simulator:
 
