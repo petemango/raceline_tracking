@@ -11,11 +11,6 @@ class RaceTrack:
         self.centerline = data[:, 0:2]
         self.centerline = np.vstack((self.centerline[-1], self.centerline, self.centerline[0]))
 
-        if raceline_filepath is not None:
-            self.raceline = np.loadtxt(raceline_filepath, comments="#", delimiter=",")
-        else:
-            self.raceline = None
-
         centerline_gradient = np.gradient(self.centerline, axis=0)
         # Unfortunate Warning Print: https://github.com/numpy/numpy/issues/26620
         centerline_cross = np.cross(centerline_gradient, np.array([0.0, 0.0, 1.0]))
@@ -28,19 +23,34 @@ class RaceTrack:
         self.centerline = np.delete(self.centerline, 0, axis=0)
         self.centerline = np.delete(self.centerline, -1, axis=0)
 
+        # If a raceline file is provided, load it; otherwise use the centerline as the raceline.
+        if raceline_filepath is not None:
+            self.raceline = np.loadtxt(raceline_filepath, comments="#", delimiter=",")
+        else:
+            self.raceline = self.centerline
+
         # Compute track left and right boundaries
         self.right_boundary = self.centerline[:, :2] + centerline_norm[:, :2] * np.expand_dims(data[:, 2], axis=1)
         self.left_boundary = self.centerline[:, :2] - centerline_norm[:, :2]*np.expand_dims(data[:, 3], axis=1)
 
-        # Compute initial position and heading
+        # Compute initial position and heading.
+        # If a raceline is available, start on the first raceline point with
+        # heading aligned to the next raceline point; otherwise fall back to
+        # the centerline start and heading.
+        if self.raceline is not None:
+            start_xy = self.raceline[0, :2]
+            next_xy = self.raceline[1, :2]
+        else:
+            start_xy = self.centerline[0, :2]
+            next_xy = self.centerline[1, :2]
+
+        heading = np.arctan2(next_xy[1] - start_xy[1], next_xy[0] - start_xy[0])
+
         self.initial_state = np.array([
-            self.centerline[0, 0],
-            self.centerline[0, 1],
+            start_xy[0],
+            start_xy[1],
             0.0, 0.0,
-            np.arctan2(
-                self.centerline[1, 1] - self.centerline[0, 1], 
-                self.centerline[1, 0] - self.centerline[0, 0]
-            )
+            heading
         ])
 
         # Matplotlib Plots

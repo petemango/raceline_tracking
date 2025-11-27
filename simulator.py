@@ -7,7 +7,7 @@ from time import time
 
 from racetrack import RaceTrack
 from racecar import RaceCar
-from controller import lower_controller, controller
+from controllers import lower_controller, controller, reset_lower_controller_state
 
 class Simulator:
 
@@ -16,6 +16,9 @@ class Simulator:
         matplotlib.rcParams["font.size"] = 8
 
         self.rt = rt
+
+        # Ensure low-level PID state is clean for this simulation.
+        reset_lower_controller_state()
         self.figure, self.axis = plt.subplots(1, 1)
 
         self.axis.set_xlabel("X"); self.axis.set_ylabel("Y")
@@ -26,8 +29,10 @@ class Simulator:
         self.lap_start_time = None
         self.lap_finished = False
         self.lap_started = False
-        self.track_limit_violations = 0
+        self.track_limit_violations = 0 # Total violations (deprecated if using current_lap_violations)
+        self.current_lap_violations = 0 # Violations for the current lap
         self.currently_violating = False
+        self.lap_number = 0
 
     def check_track_limits(self):
         car_position = self.car.state[0:2]
@@ -60,16 +65,13 @@ class Simulator:
         is_violating = proj_right > right_dist or proj_left > left_dist
         
         if is_violating and not self.currently_violating:
-            self.track_limit_violations += 1
+            self.current_lap_violations += 1
             self.currently_violating = True
         elif not is_violating:
             self.currently_violating = False
 
     def run(self):
         try:
-            if self.lap_finished:
-                exit()
-
             self.figure.canvas.flush_events()
             self.axis.cla()
 
@@ -78,6 +80,7 @@ class Simulator:
             self.axis.set_xlim(self.car.state[0] - 200, self.car.state[0] + 200)
             self.axis.set_ylim(self.car.state[1] - 200, self.car.state[1] + 200)
 
+            # Always advance the simulation
             desired = controller(self.car.state, self.car.parameters, self.rt)
             cont = lower_controller(self.car.state, desired, self.car.parameters)
             self.car.update(cont)
@@ -91,19 +94,21 @@ class Simulator:
             )
 
             self.axis.text(
-                self.car.state[0] + 195, self.car.state[1] + 195, "Lap completed: " + str(self.lap_finished),
+                self.car.state[0] + 195, self.car.state[1] + 195,
+                "Lap completed: " + ("YES" if self.lap_finished else "NO"),
                 horizontalalignment="right", verticalalignment="top",
                 fontsize=8, color="Red"
             )
 
             self.axis.text(
-                self.car.state[0] + 195, self.car.state[1] + 170, "Lap time: " + f"{self.lap_time_elapsed:.2f}",
+                self.car.state[0] + 195, self.car.state[1] + 170,
+                ("Final lap time: " if self.lap_finished else "Lap time: ") + f"{self.lap_time_elapsed:.2f}",
                 horizontalalignment="right", verticalalignment="top",
                 fontsize=8, color="Red"
             )
 
             self.axis.text(
-                self.car.state[0] + 195, self.car.state[1] + 155, "Track violations: " + str(self.track_limit_violations),
+                self.car.state[0] + 195, self.car.state[1] + 155, "Track violations: " + str(self.current_lap_violations),
                 horizontalalignment="right", verticalalignment="top",
                 fontsize=8, color="Red"
             )
@@ -115,17 +120,60 @@ class Simulator:
             exit()
 
     def update_status(self):
-        progress = np.linalg.norm(self.car.state[0:2] - self.rt.centerline[0, 0:2], 2)
+        # Prefer raceline-based lap detection when available; fall back to the
+        # original centerline-distance logic otherwise.
+        if hasattr(self.rt, "raceline") and hasattr(self.rt, "last_idx") and self.rt.last_idx is not None:
+            n_points = len(self.rt.raceline)
+            current_idx = self.rt.last_idx
 
-        if progress > 10.0 and not self.lap_started:
-            self.lap_started = True
-    
-        if progress <= 1.0 and self.lap_started and not self.lap_finished:
-            self.lap_finished = True
-            self.lap_time_elapsed = time() - self.lap_start_time
+            # Initialize reference index and max progress the first time.
+            if not hasattr(self, "initial_raceline_idx") or self.initial_raceline_idx is None:
+                self.initial_raceline_idx = current_idx
+                self.max_progress_idx = 0
 
-        if not self.lap_finished and self.lap_start_time is not None:
-            self.lap_time_elapsed = time() - self.lap_start_time
+            # Progress index measured from the initial index, modulo track length.
+            progress_idx = (current_idx - self.initial_raceline_idx) % n_points
+
+            # Mark lap start once we've moved a small fraction of the track.
+            if not self.lap_started and progress_idx > 0.05 * n_points:
+                self.lap_started = True
+
+            if self.lap_started and not self.lap_finished:
+                if progress_idx > getattr(self, "max_progress_idx", 0):
+                    self.max_progress_idx = progress_idx
+
+                # Consider lap finished once we've gone most of the way around
+                # and wrapped back near the start.
+                if self.max_progress_idx > 0.9 * n_points and progress_idx < 0.1 * n_points:
+                    self.lap_finished = True
+                    if self.lap_start_time is not None:
+                        self.lap_time_elapsed = time() - self.lap_start_time
+                    
+                    self.lap_number += 1
+                    print(f"Lap {self.lap_number} finished in {self.lap_time_elapsed:.2f}s with {self.current_lap_violations} violations.")
+
+                    # Reset for next lap
+                    self.lap_started = False
+                    self.lap_finished = False
+                    self.max_progress_idx = 0
+                    self.lap_start_time = time()
+                    self.current_lap_violations = 0 # Reset violations for new lap
+
+            if not self.lap_finished and self.lap_start_time is not None:
+                self.lap_time_elapsed = time() - self.lap_start_time
+        else:
+            progress = np.linalg.norm(self.car.state[0:2] - self.rt.centerline[0, 0:2], 2)
+
+            if progress > 10.0 and not self.lap_started:
+                self.lap_started = True
+        
+            if progress <= 1.0 and self.lap_started and not self.lap_finished:
+                self.lap_finished = True
+                if self.lap_start_time is not None:
+                    self.lap_time_elapsed = time() - self.lap_start_time
+
+            if not self.lap_finished and self.lap_start_time is not None:
+                self.lap_time_elapsed = time() - self.lap_start_time
 
     def start(self):
         # Run the simulation loop every 1 millisecond.
