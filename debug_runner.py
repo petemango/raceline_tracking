@@ -54,7 +54,7 @@ def run_simulation(track_file, raceline_file, max_steps=5000):
         cte, he = 0.0, 0.0
         if hasattr(rt, 'last_idx') and rt.last_idx is not None:
             # We need to import get_track_errors from controller
-            cte, he = get_track_errors(car.state, rt.raceline, known_idx=rt.last_idx)
+            cte, he = get_track_errors(car.state, rt.raceline, known_index=rt.last_idx)
         
         pos = car.state[0:2]
         vel = car.state[3]

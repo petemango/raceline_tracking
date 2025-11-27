@@ -1,89 +1,68 @@
 import numpy as np
 from numpy.typing import ArrayLike
 
-# Global state for PID
-_pid_state: dict = {}
-
+_pid_state = {}
 
 def reset_lower_controller_state() -> None:
     global _pid_state
     _pid_state = {
         "initialized": False,
-        "steer_integral": 0.0,
-        "steer_prev_error": 0.0,
-        "vel_integral": 0.0,
-        "vel_prev_error": 0.0,
+        "integral_steering_error": 0.0,
+        "previous_steering_error": 0.0,
+        "integral_velocity_error": 0.0,
+        "previous_velocity_error": 0.0,
     }
 
-
-# Initialize on import
 reset_lower_controller_state()
 
-
-def lower_controller(
-    state: ArrayLike, desired: ArrayLike, parameters: ArrayLike
-) -> ArrayLike:
+def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike) -> ArrayLike:
     global _pid_state
+    delta_time = 0.1
 
-    dt = 0.1
-
-    current_steer = float(state[2])
-    current_vel = float(state[3])
-
-    desired_steer = float(desired[0])
-    desired_vel = float(desired[1])
+    current_steering_angle = float(state[2])
+    current_velocity = float(state[3])
+    desired_steering_angle = float(desired[0])
+    desired_velocity = float(desired[1])
 
     if not _pid_state["initialized"]:
+        reset_lower_controller_state()
         _pid_state["initialized"] = True
-        _pid_state["steer_integral"] = 0.0
-        _pid_state["steer_prev_error"] = 0.0
-        _pid_state["vel_integral"] = 0.0
-        _pid_state["vel_prev_error"] = 0.0
 
     # Limits
-    min_steer_vel = float(parameters[7])
-    max_steer_vel = float(parameters[9])
-    min_accel = float(parameters[8])
-    max_accel = float(parameters[10])
+    min_steering_rate = float(parameters[7])
+    max_steering_rate = float(parameters[9])
+    min_acceleration = float(parameters[8])
+    max_acceleration = float(parameters[10])
 
     # Steering PID
-    e_steer = desired_steer - current_steer
-    Kp_steer, Ki_steer, Kd_steer = 4.0, 0.5, 0.1
+    error_steering = desired_steering_angle - current_steering_angle
+    kp_steering, ki_steering, kd_steering = 4.0, 0.5, 0.1
+    
+    # Integration and Derivative
+    new_integral_steering = _pid_state["integral_steering_error"] + error_steering * delta_time
+    derivative_steering = (error_steering - _pid_state["previous_steering_error"]) / delta_time
+    
+    raw_steering_rate = kp_steering * error_steering + ki_steering * new_integral_steering + kd_steering * derivative_steering
+    commanded_steering_rate = float(np.clip(raw_steering_rate, min_steering_rate, max_steering_rate))
 
-    steer_integral_candidate = _pid_state["steer_integral"] + e_steer * dt
-    steer_derivative = (e_steer - _pid_state["steer_prev_error"]) / dt
-
-    steer_rate_unsat = (
-        Kp_steer * e_steer
-        + Ki_steer * steer_integral_candidate
-        + Kd_steer * steer_derivative
-    )
-
-    steer_rate = float(np.clip(steer_rate_unsat, min_steer_vel, max_steer_vel))
-
-    if steer_rate == steer_rate_unsat:
-        _pid_state["steer_integral"] = steer_integral_candidate
-
-    _pid_state["steer_prev_error"] = e_steer
+    # Anti-windup: only update integral if not saturated
+    if commanded_steering_rate == raw_steering_rate:
+        _pid_state["integral_steering_error"] = new_integral_steering
+    _pid_state["previous_steering_error"] = error_steering
 
     # Velocity PID
-    e_vel = desired_vel - current_vel
-    Kp_vel, Ki_vel, Kd_vel = 1.5, 0.4, 0.05
+    error_velocity = desired_velocity - current_velocity
+    kp_velocity, ki_velocity, kd_velocity = 1.5, 0.4, 0.05
 
-    vel_integral_candidate = _pid_state["vel_integral"] + e_vel * dt
-    vel_derivative = (e_vel - _pid_state["vel_prev_error"]) / dt
+    new_integral_velocity = _pid_state["integral_velocity_error"] + error_velocity * delta_time
+    derivative_velocity = (error_velocity - _pid_state["previous_velocity_error"]) / delta_time
 
-    accel_unsat = (
-        Kp_vel * e_vel
-        + Ki_vel * vel_integral_candidate
-        + Kd_vel * vel_derivative
-    )
+    raw_acceleration = kp_velocity * error_velocity + ki_velocity * new_integral_velocity + kd_velocity * derivative_velocity
+    commanded_acceleration = float(np.clip(raw_acceleration, min_acceleration, max_acceleration))
 
-    accel = float(np.clip(accel_unsat, min_accel, max_accel))
+    # Anti-windup
+    if commanded_acceleration == raw_acceleration:
+        _pid_state["integral_velocity_error"] = new_integral_velocity
+    _pid_state["previous_velocity_error"] = error_velocity
 
-    if accel == accel_unsat:
-        _pid_state["vel_integral"] = vel_integral_candidate
-
-    _pid_state["vel_prev_error"] = e_vel
-
-    return np.array([steer_rate, accel])
+    return np.array([commanded_steering_rate, commanded_acceleration])

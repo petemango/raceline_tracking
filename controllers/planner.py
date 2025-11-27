@@ -1,83 +1,72 @@
 import numpy as np
 
+def generate_speed_profile(path, parameters, safe_max_velocity):
+    num_points = len(path)
+    velocity_profile = np.zeros(num_points)
+    curvature_profile = np.zeros(num_points)
 
-def generate_speed_profile(path, parameters, safe_max_vel):
-    n_points = len(path)
-    speed_profile = np.zeros(n_points)
-    curvature_profile = np.zeros(n_points)
-
-    max_v = min(parameters[5], safe_max_vel)
-    max_lat_accel = 20.0
+    max_velocity = min(parameters[5], safe_max_velocity)
+    max_lateral_acceleration = 20.0
     max_braking = np.abs(parameters[8])
-    max_accel = parameters[10]
+    max_acceleration = parameters[10]
 
-    # 1. Curvature and Max Cornering Speed
-    for i in range(n_points):
-        p1 = path[(i - 1) % n_points]
-        p2 = path[i]
-        p3 = path[(i + 1) % n_points]
+    # Calculate curvature-limited speed
+    for i in range(num_points):
+        point_prev = path[(i - 1) % num_points]
+        point_curr = path[i]
+        point_next = path[(i + 1) % num_points]
 
-        v1 = p2 - p1
-        v2 = p3 - p2
-        area = 0.5 * np.abs(v1[0]*v2[1] - v1[1]*v2[0])
+        vector_1 = point_curr - point_prev
+        vector_2 = point_next - point_curr
+        
+        # Area of triangle formed by the three points
+        triangle_area = 0.5 * np.abs(vector_1[0] * vector_2[1] - vector_1[1] * vector_2[0])
 
-        l1 = np.linalg.norm(v1)
-        l2 = np.linalg.norm(v2)
-        l3 = np.linalg.norm(p3 - p1)
+        length_1 = np.linalg.norm(vector_1)
+        length_2 = np.linalg.norm(vector_2)
+        length_3 = np.linalg.norm(point_next - point_prev)
 
-        if area < 1e-6:
-            k = 0.0
-        else:
-            k = (4 * area) / (l1 * l2 * l3)
+        # Curvature k = 1/R = 4*Area / (a*b*c)
+        curvature = (4 * triangle_area) / (length_1 * length_2 * length_3) if triangle_area > 1e-6 else 0.0
+        curvature_profile[i] = curvature
 
-        curvature_profile[i] = k
+        velocity_limit = np.sqrt(max_lateral_acceleration / curvature) if curvature > 1e-4 else max_velocity
+        velocity_profile[i] = min(velocity_limit, max_velocity)
 
-        if k < 1e-4:
-            v_limit = max_v
-        else:
-            v_limit = np.sqrt(max_lat_accel / k)
-
-        speed_profile[i] = min(v_limit, max_v)
-
-    # 2. Steering Rate Limits
+    # Apply steering rate limits
     wheelbase = parameters[0]
-    max_steer_rate = parameters[9]
+    max_steering_rate = parameters[9]
+    
+    for i in range(num_points - 1):
+        segment_distance = np.linalg.norm(path[i+1] - path[i])
+        if segment_distance < 1e-6: continue
 
-    for i in range(n_points - 1):
-        p1 = path[i]
-        p2 = path[i+1]
-        dist = np.linalg.norm(p2 - p1)
-        if dist < 1e-6:
-            continue
+        change_in_curvature = abs(curvature_profile[i+1] - curvature_profile[i]) / segment_distance
+        
+        if change_in_curvature > 1e-6:
+            steering_velocity_limit = max_steering_rate / (wheelbase * change_in_curvature)
+            velocity_profile[i] = min(velocity_profile[i], steering_velocity_limit)
+            velocity_profile[i+1] = min(velocity_profile[i+1], steering_velocity_limit)
 
-        k1 = curvature_profile[i]
-        k2 = curvature_profile[i+1]
-        dk_ds = (k2 - k1) / dist
+    # Backward pass (braking constraints)
+    # Ensure we can brake in time for upcoming lower speed limits
+    for _ in range(2): 
+        for i in range(num_points - 1, -1, -1):
+            next_index = (i + 1) % num_points
+            segment_distance = np.linalg.norm(path[next_index] - path[i])
+            
+            # v_current^2 <= v_next^2 + 2 * a_brake * d
+            allowed_velocity = np.sqrt(velocity_profile[next_index]**2 + 2 * max_braking * segment_distance)
+            velocity_profile[i] = min(velocity_profile[i], allowed_velocity)
 
-        if abs(dk_ds) > 1e-6:
-            v_steer_limit = max_steer_rate / (wheelbase * abs(dk_ds))
-            speed_profile[i] = min(speed_profile[i], v_steer_limit)
-            speed_profile[i+1] = min(speed_profile[i+1], v_steer_limit)
+    # Forward pass (acceleration constraints)
+    # Ensure the car can actually reach the target speed given acceleration limits
+    for i in range(num_points):
+        previous_index = (i - 1) % num_points
+        segment_distance = np.linalg.norm(path[i] - path[previous_index])
+        
+        # v_current^2 <= v_prev^2 + 2 * a_accel * d
+        allowed_velocity = np.sqrt(velocity_profile[previous_index]**2 + 2 * max_acceleration * segment_distance)
+        velocity_profile[i] = min(velocity_profile[i], allowed_velocity)
 
-    # 3. Backward Pass (Braking)
-    for i in range(n_points - 1, -1, -1):
-        next_i = (i + 1) % n_points
-        dist = np.linalg.norm(path[next_i] - path[i])
-        allowed_entry_sq = speed_profile[next_i]**2 + 2 * max_braking * dist
-        speed_profile[i] = min(speed_profile[i], np.sqrt(allowed_entry_sq))
-
-    # Run backward pass twice for loop closure
-    for i in range(n_points - 1, -1, -1):
-        next_i = (i + 1) % n_points
-        dist = np.linalg.norm(path[next_i] - path[i])
-        allowed_entry_sq = speed_profile[next_i]**2 + 2 * max_braking * dist
-        speed_profile[i] = min(speed_profile[i], np.sqrt(allowed_entry_sq))
-
-    # 4. Forward Pass (Accel)
-    for i in range(n_points):
-        prev_i = (i - 1) % n_points
-        dist = np.linalg.norm(path[i] - path[prev_i])
-        allowed_exit_sq = speed_profile[prev_i]**2 + 2 * max_accel * dist
-        speed_profile[i] = min(speed_profile[i], np.sqrt(allowed_exit_sq))
-
-    return speed_profile, curvature_profile
+    return velocity_profile, curvature_profile

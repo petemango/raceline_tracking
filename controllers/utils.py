@@ -1,101 +1,94 @@
 import numpy as np
 
+def get_closest_index(point, path, last_index=None, search_window=100):
+    num_points = len(path)
 
-def get_closest_index(point, path, last_idx=None, window=100):
-    n_points = len(path)
-
-    if last_idx is None:
-        dists = np.linalg.norm(path - point, axis=1)
-        return np.argmin(dists)
+    if last_index is None:
+        distances = np.linalg.norm(path - point, axis=1)
+        return np.argmin(distances)
 
     indices = []
-    start = -int(window * 0.2)
-    end = int(window)
+    start_offset = -int(search_window * 0.2)
+    end_offset = int(search_window)
 
-    for i in range(start, end):
-        indices.append((last_idx + i) % n_points)
+    for i in range(start_offset, end_offset):
+        indices.append((last_index + i) % num_points)
 
     indices = np.array(indices)
     local_path = path[indices]
-
-    dists = np.linalg.norm(local_path - point, axis=1)
-    best_local_idx = np.argmin(dists)
-
-    return indices[best_local_idx]
-
+    
+    distances = np.linalg.norm(local_path - point, axis=1)
+    best_local_index = np.argmin(distances)
+    
+    return indices[best_local_index]
 
 def compute_path_tangents(path):
-    n_points = len(path)
+    num_points = len(path)
     tangents = np.zeros_like(path)
-    for i in range(n_points):
-        prev_p = path[(i - 1) % n_points]
-        next_p = path[(i + 1) % n_points]
-        vec = next_p - prev_p
-        norm = np.linalg.norm(vec)
-        if norm > 1e-6:
-            tangents[i] = vec / norm
+    for i in range(num_points):
+        previous_point = path[(i - 1) % num_points]
+        next_point = path[(i + 1) % num_points]
+        
+        tangent_vector = next_point - previous_point
+        vector_length = np.linalg.norm(tangent_vector)
+        
+        if vector_length > 1e-6:
+            tangents[i] = tangent_vector / vector_length
         else:
             tangents[i] = np.array([1.0, 0.0])
     return tangents
 
-
-def get_track_errors(car_state, path, known_idx=None, tangents=None):
-    car_pos = car_state[0:2]
+def get_track_errors(car_state, path, known_index=None, tangents=None):
+    car_position = car_state[0:2]
     car_heading = car_state[4]
+    num_points = len(path)
 
-    if known_idx is not None:
-        closest_idx = known_idx
+    current_index = known_index if known_index is not None else get_closest_index(car_position, path)
+    
+    next_index = (current_index + 1) % num_points
+    previous_index = (current_index - 1) % num_points
+
+    vector_to_next = path[next_index] - path[current_index]
+    vector_to_car = car_position - path[current_index]
+
+    if np.dot(vector_to_car, vector_to_next) >= 0:
+        point_1 = path[current_index]
+        point_2 = path[next_index]
+        index_1 = current_index
+        index_2 = next_index
     else:
-        closest_idx = get_closest_index(car_pos, path)
+        point_1 = path[previous_index]
+        point_2 = path[current_index]
+        index_1 = previous_index
+        index_2 = current_index
 
-    next_idx = (closest_idx + 1) % len(path)
-    prev_idx = (closest_idx - 1) % len(path)
+    segment_vector = point_2 - point_1
+    segment_length = np.linalg.norm(segment_vector)
 
-    vec_next = path[next_idx] - path[closest_idx]
-    vec_car = car_pos - path[closest_idx]
-
-    # Determine active segment
-    if np.dot(vec_car, vec_next) >= 0:
-        p1 = path[closest_idx]
-        p2 = path[next_idx]
-        idx1 = closest_idx
-        idx2 = next_idx
-    else:
-        p1 = path[prev_idx]
-        p2 = path[closest_idx]
-        idx1 = prev_idx
-        idx2 = closest_idx
-
-    segment_vec = p2 - p1
-    segment_len = np.linalg.norm(segment_vec)
-
-    if segment_len < 1e-6:
+    if segment_length < 1e-6:
         return 0.0, 0.0
 
-    segment_unit_vec = segment_vec / segment_len
-    p1_to_car = car_pos - p1
-    proj_len = np.dot(p1_to_car, segment_unit_vec)
-    closest_point_on_line = p1 + segment_unit_vec * proj_len
+    segment_unit_vector = segment_vector / segment_length
+    vector_p1_to_car = car_position - point_1
+    projection_length = np.dot(vector_p1_to_car, segment_unit_vector)
+    closest_point_on_line = point_1 + segment_unit_vector * projection_length
+    
+    cross_track_error = np.linalg.norm(car_position - closest_point_on_line)
+    
+    # Check which side of the line we are on
+    cross_product_z = segment_vector[0] * vector_p1_to_car[1] - segment_vector[1] * vector_p1_to_car[0]
+    if cross_product_z < 0:
+        cross_track_error = -cross_track_error
 
-    # Cross Track Error
-    cte_vec = car_pos - closest_point_on_line
-    cte = np.linalg.norm(cte_vec)
-
-    cross_prod = segment_vec[0] * p1_to_car[1] - segment_vec[1] * p1_to_car[0]
-    if cross_prod < 0:
-        cte = -cte
-
-    # Heading Error
     if tangents is not None:
-        t_factor = np.clip(proj_len / segment_len, 0.0, 1.0)
-        t1 = tangents[idx1]
-        t2 = tangents[idx2]
-        t_interp = (1.0 - t_factor) * t1 + t_factor * t2
-        track_heading = np.arctan2(t_interp[1], t_interp[0])
+        interpolation_factor = np.clip(projection_length / segment_length, 0.0, 1.0)
+        interpolated_tangent = (1.0 - interpolation_factor) * tangents[index_1] + interpolation_factor * tangents[index_2]
+        target_heading = np.arctan2(interpolated_tangent[1], interpolated_tangent[0])
     else:
-        track_heading = np.arctan2(segment_vec[1], segment_vec[0])
+        target_heading = np.arctan2(segment_vector[1], segment_vector[0])
 
-    heading_error = car_heading - track_heading
+    heading_error = car_heading - target_heading
+    # Normalize angle to -pi to pi
     heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
 
-    return cte, heading_error
+    return cross_track_error, heading_error
