@@ -45,7 +45,7 @@ def controller(
         state, path, known_idx=current_idx, tangents=tangents)
 
     # 2. Target Velocity (Dynamic Lookahead)
-    lookahead_time = 0.5
+    lookahead_time = 1.0
     lookahead_dist = max(car_vel * lookahead_time, 5.0)
 
     avg_segment_len = 5.0
